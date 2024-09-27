@@ -1,158 +1,66 @@
+const express = require('express');
+const cors = require('cors');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 require('dotenv').config();
 
-const express = require('express');
-const bodyParser = require('body-parser');
-const { Client } = require('pg');
-const axios = require('axios');
-const NodeCache = require('node-cache');
-const cors = require('cors');
-
 const app = express();
-const PORT = process.env.PORT || 5000;
+const port = process.env.PORT || 5000;
 
-// Middleware
-app.use(bodyParser.json());
 app.use(cors());
+app.use(express.json());
 
-// PostgreSQL client setup
-const client = new Client({
-    connectionString: process.env.DATABASE_URL,
-});
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// Attempt to connect to the database
-client.connect()
-    .then(() => console.log('Connected to PostgreSQL database'))
-    .catch(err => {
-        console.error('Error connecting to PostgreSQL database:', err);
-        process.exit(1); // Exit the process if we can't connect to the database
-    });
+// ... (keep existing imports and setup)
 
-// Cache setup
-const cache = new NodeCache({ stdTTL: 3600 });
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+function parseRecommendedMenu(response, fullMenu) {
+    const lines = response.split('\n');
+    const recommendedItems = [];
 
-// Endpoint to fetch menu items
-app.get('/api/menu', async (req, res) => {
-    try {
-        const result = await client.query('SELECT * FROM menu');
-        res.json(result.rows);
-    } catch (error) {
-        console.error('Error fetching menu:', error);
-        res.status(500).json({ error: 'Error fetching menu', details: error.message });
-    }
-});
-
-// New endpoint to fetch filtered menu items
-app.get('/api/menu/filter', async (req, res) => {
-    const { filter } = req.query;
-    try {
-        let query = 'SELECT * FROM menu';
-        if (filter) {
-            query += ` WHERE LOWER(name) LIKE LOWER('%${filter}%') OR LOWER(category) LIKE LOWER('%${filter}%') OR LOWER(description) LIKE LOWER('%${filter}%')`;
+    for (const line of lines) {
+        const match = line.match(/\d+\.\s+\*\*(.*?)\*\*/);
+        if (match) {
+            recommendedItems.push(match[1].toLowerCase().trim());
         }
-        const result = await client.query(query);
-        res.json(result.rows);
-    } catch (error) {
-        console.error('Error fetching filtered menu:', error);
-        res.status(500).json({ error: 'Error fetching filtered menu', details: error.message });
     }
-});
 
-// Endpoint to handle chat messages
+    console.log('Recommended items:', recommendedItems);
+
+    const filteredMenu = fullMenu.filter(item => 
+        recommendedItems.some(recommendedItem => 
+            item.productTitle.toLowerCase().includes(recommendedItem)
+        )
+    );
+
+    console.log('Filtered menu:', filteredMenu);
+
+    return filteredMenu;
+}
+
 app.post('/api/chat', async (req, res) => {
-    const { prompt } = req.body;
-    const cachedAnswer = cache.get(prompt);
-    if (cachedAnswer) {
-        return res.json({ response: cachedAnswer });
-    }
-
     try {
-        // Fetch menu items from the database
-        const result = await client.query('SELECT * FROM menu');
-        const menuItems = result.rows;
+        const { message, menu } = req.body;
 
-        // Prepare the prompt for Gemini API
-        const geminiPrompt = `You are an AI assistant for a restaurant. The user says: "${prompt}". Here's our menu: ${JSON.stringify(menuItems)}. Please help the user order by suggesting items, answering questions about the menu, or assisting with their order. If they want to order, confirm the items and total price.`;
+        const model = genAI.getGenerativeModel({ model: "gemini-pro"});
 
-        // Call Gemini API
-        const geminiResponse = await axios.post('https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent', {
-            contents: [{
-                parts: [{
-                    text: geminiPrompt
-                }]
-            }]
-        }, {
-            headers: {
-                'Content-Type': 'application/json',
-                'x-goog-api-key': GEMINI_API_KEY
-            }
-        });
+        const prompt = `You are a food ordering chatbot. The user's message is: "${message}". Here's the menu: ${JSON.stringify(menu)}. Recommend dishes based on the user's message and the available menu items. Format your response as a numbered list with the recommended dishes in bold, including their prices.`;
 
-        const responseText = geminiResponse.data.candidates[0].content.parts[0].text;
+        const result = await model.generateContent(prompt);
+        const response = result.response.text();
 
-        // Cache the answer
-        cache.set(prompt, responseText);
-        res.json({ response: responseText });
+        console.log('Gemini response:', response);
+
+        const recommendedMenu = parseRecommendedMenu(response, menu);
+
+        console.log('Recommended menu:', recommendedMenu);
+
+        res.json({ response, recommendedMenu });
     } catch (error) {
-        console.error('Error processing request:', error.message);
-        res.status(500).json({ error: 'Failed to process request', details: error.message });
+        console.error('Error processing chat:', error);
+        res.status(500).json({ error: 'An error occurred while processing your request.' });
     }
 });
 
-// New endpoint to get AI-recommended menu items
-app.post('/api/menu/recommend', async (req, res) => {
-    const { prompt } = req.body;
-    try {
-        // Fetch all menu items
-        const result = await client.query('SELECT * FROM menu');
-        const menuItems = result.rows;
+// Remove the app.listen part, as Vercel will handle this
 
-        // Prepare the prompt for Gemini API
-        const geminiPrompt = `You are an AI assistant for a restaurant. The user says: "${prompt}". Here's our menu: ${JSON.stringify(menuItems)}. Please recommend suitable menu items based on the user's request. Return only the IDs of the recommended items as a JSON array. Do not include any additional text or formatting in your response, just the JSON array.`;
-
-        // Call Gemini API
-        const geminiResponse = await axios.post('https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent', {
-            contents: [{
-                parts: [{
-                    text: geminiPrompt
-                }]
-            }]
-        }, {
-            headers: {
-                'Content-Type': 'application/json',
-                'x-goog-api-key': GEMINI_API_KEY
-            }
-        });
-
-        const responseText = geminiResponse.data.candidates[0].content.parts[0].text;
-        
-        // Clean up the response text
-        const cleanedResponse = responseText.replace(/```json|```/g, '').trim();
-        
-        let recommendedIds;
-        try {
-            recommendedIds = JSON.parse(cleanedResponse);
-        } catch (parseError) {
-            console.error('Error parsing AI response:', parseError);
-            // If parsing fails, return all menu items
-            return res.json(menuItems);
-        }
-
-        if (!Array.isArray(recommendedIds)) {
-            console.error('AI did not return an array of IDs');
-            // If the response is not an array, return all menu items
-            return res.json(menuItems);
-        }
-
-        // Fetch the recommended items from the database
-        const recommendedItems = await client.query('SELECT * FROM menu WHERE id = ANY($1)', [recommendedIds]);
-        
-        res.json(recommendedItems.rows);
-    } catch (error) {
-        console.error('Error recommending menu items:', error);
-        res.status(500).json({ error: 'Error recommending menu items', details: error.message });
-    }
-});
-
-// Instead of app.listen(), export the app
 module.exports = app;
