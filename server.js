@@ -5,7 +5,13 @@ require('dotenv').config();
 
 const app = express();
 
-app.use(cors());
+// Update CORS configuration
+app.use(cors({
+  origin: 'https://ecub-bot1.vercel.app',
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(express.json());
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
