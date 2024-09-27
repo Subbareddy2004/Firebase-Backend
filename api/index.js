@@ -4,7 +4,6 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 require('dotenv').config();
 
 const app = express();
-const port = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
@@ -61,6 +60,9 @@ app.post('/api/chat', async (req, res) => {
     }
 });
 
-// Remove the app.listen part, as Vercel will handle this
+// Add a root route for testing
+app.get('/', (req, res) => {
+    res.json({ message: "Backend is running" });
+});
 
 module.exports = app;
